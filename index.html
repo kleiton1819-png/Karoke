@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Karaokê – Protótipo</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f5f3ff;--fg:#1e1b4b;--card:#fff;--mut:#6b7280;--ac:#7c3aed;--ok:#16a34a;--bad:#dc2626}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f0b24;--fg:#f5f3ff;--card:#1c1740;--mut:#a5a3c4;--ac:#a78bfa;--ok:#4ade80;--bad:#f87171}}
+:root[data-theme="dark"]{--bg:#0f0b24;--fg:#f5f3ff;--card:#1c1740;--mut:#a5a3c4;--ac:#a78bfa;--ok:#4ade80;--bad:#f87171}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;text-align:center}
+main{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:1.3rem;margin:8px 0}
+.card{background:var(--card);border-radius:16px;padding:16px;margin:12px 0}
+#note{font-size:clamp(4rem,22vw,9rem);font-weight:800;line-height:1;color:var(--ac)}
+#hz,.lbl{color:var(--mut);font-size:.9rem}
+#meter{position:relative;height:18px;border-radius:9px;background:linear-gradient(90deg,var(--bad),var(--ok) 40%,var(--ok) 60%,var(--bad));margin:14px 0 4px;opacity:.85}
+#needle{position:absolute;top:-4px;width:4px;height:26px;background:var(--fg);border-radius:2px;left:50%;transition:left .08s}
+#vol{height:8px;border-radius:4px;background:var(--mut);opacity:.3;overflow:hidden}#volb{height:100%;width:0;background:var(--ac)}
+#score{font-size:clamp(2.5rem,14vw,5rem);font-weight:800}
+.row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+button,select{font:inherit;padding:12px 18px;border-radius:12px;border:0;background:var(--ac);color:#fff;max-width:100%}
+select{background:var(--card);color:var(--fg);border:1px solid var(--mut)}
+#msg{color:var(--mut);font-size:.9rem;min-height:1.2em}
+</style>
+</head>
+<body>
+<main>
+<h1>🎤 Karaokê – protótipo</h1>
+<div class="card">
+  <div id="note">–</div>
+  <div id="hz">cante ou assobie no microfone</div>
+  <div id="meter"><div id="needle"></div></div>
+  <div class="lbl">grave ↔ afinado ↔ agudo</div>
+  <div id="vol" style="margin-top:12px"><div id="volb"></div></div>
+</div>
+<div class="card">
+  <div class="lbl">PONTUAÇÃO</div>
+  <div id="score">0</div>
+  <div class="lbl">afinação média: <b id="acc">–</b> · sequência: <b id="streak">0</b></div>
+</div>
+<div class="row">
+  <button id="start">Iniciar microfone</button>
+  <button id="reset" style="background:var(--card);color:var(--fg);border:1px solid var(--mut)">Zerar</button>
+</div>
+<div class="row" style="margin-top:10px"><select id="dev" hidden></select></div>
+<p id="msg"></p>
+<p class="lbl">Modo livre: pontua afinação e estabilidade da nota, sem melodia de referência.</p>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const NAMES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+let ctx,an,stream,buf,raf,score=0,okF=0,vF=0,streak=0,hist=[];
+
+function yin(b,sr){
+  let rms=0;for(let i=0;i<b.length;i++)rms+=b[i]*b[i];rms=Math.sqrt(rms/b.length);
+  if(rms<0.012)return {f:-1,rms};
+  const W=1024,minT=Math.floor(sr/1000),maxT=Math.min(Math.floor(sr/80),b.length-W-1);
+  const d=new Float32Array(maxT+1);let run=0;d[0]=1;
+  for(let t=1;t<=maxT;t++){let s=0;for(let i=0;i<W;i++){const x=b[i]-b[i+t];s+=x*x}run+=s;d[t]=s*t/run}
+  for(let t=minT;t<maxT;t++){
+    if(d[t]<0.15){while(t+1<maxT&&d[t+1]<d[t])t++;
+      const a=d[t-1],c=d[t],e=d[t+1],p=t+(a-e)/(2*(a-2*c+e)||1);return {f:sr/p,rms}}
+  }
+  return {f:-1,rms};
+}
+
+function loop(){
+  an.getFloatTimeDomainData(buf);
+  const {f,rms}=yin(buf,ctx.sampleRate);
+  $("volb").style.width=Math.min(100,rms*400)+"%";
+  if(f>0){
+    const m=69+12*Math.log2(f/440),r=Math.round(m),cents=(m-r)*100;
+    $("note").textContent=NAMES[((r%12)+12)%12]+(Math.floor(r/12)-1);
+    $("hz").textContent=f.toFixed(1)+" Hz · "+(cents>=0?"+":"")+cents.toFixed(0)+" cents";
+    $("needle").style.left=(50+cents)+"%";
+    hist.push(m);if(hist.length>12)hist.shift();
+    const stable=hist.length>=8&&Math.max(...hist)-Math.min(...hist)<1;
+    vF++;const q=Math.max(0,1-Math.abs(cents)/50);
+    if(stable){score+=q*0.6;if(q>0.6){okF++;streak++}else streak=0}
+    $("score").textContent=Math.round(score);
+    $("acc").textContent=Math.round(100*okF/vF)+"%";
+    $("streak").textContent=streak;
+  }else{hist=[];$("note").textContent="–";$("hz").textContent="silêncio";$("needle").style.left="50%"}
+  raf=requestAnimationFrame(loop);
+}
+
+async function open(id){
+  if(stream)stream.getTracks().forEach(t=>t.stop());
+  stream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:id?{exact:id}:undefined,echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+  if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();an=ctx.createAnalyser();an.fftSize=2048;buf=new Float32Array(2048)}
+  if(ctx.state==="suspended")await ctx.resume();
+  if(ctx._src)ctx._src.disconnect();
+  ctx._src=ctx.createMediaStreamSource(stream);ctx._src.connect(an);
+}
+
+$("start").onclick=async()=>{
+  try{
+    await open();
+    const ds=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="audioinput");
+    if(ds.length>1){const s=$("dev");s.innerHTML=ds.map((d,i)=>`<option value="${d.deviceId}">${d.label||"Entrada "+(i+1)}</option>`).join("");s.hidden=false}
+    $("msg").textContent="Ouvindo… "+(ds.length>1?"escolha a entrada acima se preciso.":"");
+    $("start").textContent="Microfone ligado";
+    cancelAnimationFrame(raf);loop();
+  }catch(e){$("msg").textContent="Não consegui acessar o microfone: "+e.message}
+};
+$("dev").onchange=async e=>{try{await open(e.target.value)}catch(err){$("msg").textContent=err.message}};
+$("reset").onclick=()=>{score=okF=vF=streak=0;hist=[];$("score").textContent="0";$("acc").textContent="–";$("streak").textContent="0"};
+</script>
+</body>
+</html>
